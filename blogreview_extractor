@@ -1,0 +1,410 @@
+import tkinter as tk
+from tkinter import ttk, messagebox, filedialog
+import threading
+import os
+from selenium import webdriver
+from selenium.webdriver.chrome.service import Service as ChromeService
+from selenium.webdriver.common.by import By
+from selenium.webdriver.support.ui import WebDriverWait
+from selenium.webdriver.support import expected_conditions as EC
+from webdriver_manager.chrome import ChromeDriverManager
+from bs4 import BeautifulSoup
+import time
+import re
+
+
+def fetch_blog_post_html(url: str) -> str:
+    """
+    Selenium을 사용하여 네이버 블로그 글의 HTML 소스를 가져오는 함수입니다.
+    매개변수:
+      url (str): 가져올 네이버 블로그 글의 URL
+    반환:
+      str: 블로그 글의 HTML 소스
+    """
+    options = webdriver.ChromeOptions()
+    options.add_argument("--headless")  # 브라우저 창 없이 실행
+    options.add_argument("--disable-gpu")  # GPU 사용 안함
+    options.add_argument("--no-sandbox")  # 샌드박스 비활성화
+    options.add_argument("--disable-dev-shm-usage")  # 공유 메모리 사용 비활성화
+    options.add_argument("--disable-extensions")  # 확장 프로그램 비활성화
+
+    driver = webdriver.Chrome(service=ChromeService(ChromeDriverManager().install()), options=options)
+
+    try:
+        driver.get(url)
+        # iframe 요소가 로드될 때까지 최대 10초 대기
+        iframe = WebDriverWait(driver, 10).until(
+            EC.presence_of_element_located((By.ID, "mainFrame"))
+        )
+        driver.switch_to.frame(iframe)
+
+        # iframe 내 콘텐츠(body)가 로드될 때까지 대기
+        WebDriverWait(driver, 10).until(
+            EC.presence_of_element_located((By.TAG_NAME, "body"))
+        )
+
+        html = driver.page_source
+        return html
+    except Exception as e:
+        print(f"URL {url} 처리 중 오류 발생: {e}")
+        return ""
+    finally:
+        driver.quit()
+
+
+def extract_text_from_html(html: str) -> str:
+    """
+    HTML 소스에서 블로그 글 내용만 정밀하게 추출하는 함수입니다.
+    매개변수:
+      html (str): 블로그 글의 HTML 소스
+    반환:
+      str: 추출된 블로그 글 텍스트 내용 (깔끔하게 정리됨)
+    """
+    if not html:
+        return ""
+
+    soup = BeautifulSoup(html, 'html.parser')
+
+    # 타이틀 추출
+    title = ""
+    title_element = soup.select_one('div.se-title-text, h3.se_title, span.se-fs-')
+    if title_element:
+        title = title_element.get_text(strip=True)
+
+    extracted_text = []
+
+    # 1. 새 에디터 버전 (se-main-container)
+    if soup.select_one('div.se-main-container'):
+        # 본문 텍스트 블록 추출
+        for text_block in soup.select('div.se-text'):
+            paragraph = text_block.get_text(strip=True)
+            if paragraph:
+                extracted_text.append(paragraph)
+
+        # 인용구 추출
+        for quote in soup.select('div.se-quote'):
+            quote_text = quote.get_text(strip=True)
+            if quote_text:
+                extracted_text.append(f"인용: {quote_text}")
+
+        # 코드 블록 추출
+        for code in soup.select('div.se-code'):
+            code_text = code.get_text(strip=True)
+            if code_text:
+                extracted_text.append(f"코드: {code_text}")
+
+        # 표 추출 (간단하게 텍스트만)
+        for table in soup.select('table.se-table'):
+            for row in table.select('tr'):
+                row_texts = [cell.get_text(strip=True) for cell in row.select('th, td')]
+                if row_texts:
+                    extracted_text.append(' | '.join(row_texts))
+
+    # 2. 구 에디터 버전
+    elif soup.select_one('div.__content_area__, div.post-view'):
+        content_area = soup.select_one('div.__content_area__, div.post-view, div#postViewArea')
+        if content_area:
+            # 스크립트, 스타일 태그 제거
+            for tag in content_area.select('script, style'):
+                tag.decompose()
+
+            # 단락 추출
+            for p in content_area.select('p'):
+                p_text = p.get_text(strip=True)
+                if p_text and len(p_text) > 1:  # 의미있는 텍스트만 추출
+                    extracted_text.append(p_text)
+
+            # 단락 태그가 없는 경우, 직접 텍스트 노드 추출
+            if not extracted_text:
+                text_chunks = []
+                for element in content_area.contents:
+                    if element.name not in ['script', 'style'] and element.string and element.string.strip():
+                        text_chunks.append(element.string.strip())
+
+                if text_chunks:
+                    extracted_text = text_chunks
+                else:
+                    # 최후의 수단: 전체 텍스트를 가져와서 정리
+                    full_text = content_area.get_text(separator='\n')
+                    extracted_text = [line.strip() for line in full_text.split('\n') if line.strip()]
+
+    # 최소한의 텍스트도 찾지 못한 경우
+    if not extracted_text:
+        # 페이지에서 의미있는 텍스트 블록 찾기
+        for tag in soup.select('p, div, span'):
+            text = tag.get_text(strip=True)
+            if text and len(text) > 50:  # 일정 길이 이상인 텍스트 블록만 고려
+                extracted_text.append(text)
+
+    # 중복 제거 및 정리
+    cleaned_text = []
+    seen = set()
+    for text in extracted_text:
+        text = text.strip()
+        # 짧은 단편 텍스트나 중복 제거
+        if text and len(text) > 5 and text not in seen:
+            cleaned_text.append(text)
+            seen.add(text)
+
+    # 최종 결과 조합
+    if title:
+        final_text = f"제목: {title}\n\n" + "\n\n".join(cleaned_text)
+    else:
+        final_text = "\n\n".join(cleaned_text)
+
+    # 불필요한 공백 처리
+    final_text = re.sub(r'\n{3,}', '\n\n', final_text)
+
+    return final_text
+
+
+def get_blog_metadata(html: str) -> dict:
+    """
+    HTML에서 블로그 글의 메타데이터를 추출합니다.
+    """
+    if not html:
+        return {}
+
+    soup = BeautifulSoup(html, 'html.parser')
+    metadata = {}
+
+    # 제목 추출
+    title_selectors = [
+        'div.se-title-text span.se-fs-',
+        'h3.se_title span',
+        'h3.se_textarea',
+        'div.tit_area h3',
+        'title'
+    ]
+
+    for selector in title_selectors:
+        title_element = soup.select_one(selector)
+        if title_element:
+            metadata['title'] = title_element.get_text(strip=True)
+            break
+
+    # 작성일 추출
+    date_selectors = [
+        'span.se_publishDate',
+        'span.date',
+        'p.blog_date',
+        'div.date'
+    ]
+
+    for selector in date_selectors:
+        date_element = soup.select_one(selector)
+        if date_element:
+            metadata['date'] = date_element.get_text(strip=True)
+            break
+
+    # 카테고리 추출
+    category_selectors = [
+        'div.blog_category',
+        'a.category',
+        'span.cate'
+    ]
+
+    for selector in category_selectors:
+        category_element = soup.select_one(selector)
+        if category_element:
+            metadata['category'] = category_element.get_text(strip=True)
+            break
+
+    return metadata
+
+
+class BlogExtractorApp:
+    def __init__(self, root):
+        self.root = root
+        self.root.title("블로그리뷰 추출기")
+        self.root.geometry("800x600")
+        self.root.minsize(600, 500)
+
+        self.url_list = []
+        self.extracted_text = ""
+
+        self.setup_ui()
+
+    def setup_ui(self):
+        # 메인 프레임
+        main_frame = ttk.Frame(self.root, padding=10)
+        main_frame.pack(fill=tk.BOTH, expand=True)
+
+        # URL 입력 섹션
+        url_frame = ttk.LabelFrame(main_frame, text="URL 입력", padding=5)
+        url_frame.pack(fill=tk.X, pady=5)
+
+        url_entry_frame = ttk.Frame(url_frame)
+        url_entry_frame.pack(fill=tk.X, expand=True)
+
+        self.url_entry = ttk.Entry(url_entry_frame)
+        self.url_entry.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(0, 5))
+
+        add_button = ttk.Button(url_entry_frame, text="+", width=3, command=self.add_url)
+        add_button.pack(side=tk.RIGHT)
+
+        # URL 리스트 프레임
+        list_frame = ttk.LabelFrame(main_frame, text="URL 목록", padding=5)
+        list_frame.pack(fill=tk.X, pady=5)
+
+        self.url_listbox = tk.Listbox(list_frame, height=5)
+        self.url_listbox.pack(fill=tk.X, expand=True)
+
+        button_frame = ttk.Frame(list_frame)
+        button_frame.pack(fill=tk.X, pady=5)
+
+        remove_button = ttk.Button(button_frame, text="삭제", command=self.remove_url)
+        remove_button.pack(side=tk.LEFT, padx=5)
+
+        clear_button = ttk.Button(button_frame, text="모두 삭제", command=self.clear_urls)
+        clear_button.pack(side=tk.LEFT, padx=5)
+
+        extract_button = ttk.Button(button_frame, text="본문 추출", command=self.start_extraction)
+        extract_button.pack(side=tk.RIGHT, padx=5)
+
+        # 결과 텍스트 영역
+        result_frame = ttk.LabelFrame(main_frame, text="추출 결과", padding=5)
+        result_frame.pack(fill=tk.BOTH, expand=True, pady=5)
+
+        # 스크롤바 추가
+        scrollbar = ttk.Scrollbar(result_frame)
+        scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
+
+        self.result_text = tk.Text(result_frame, wrap=tk.WORD, yscrollcommand=scrollbar.set)
+        self.result_text.pack(fill=tk.BOTH, expand=True)
+        scrollbar.config(command=self.result_text.yview)
+
+        # 하단 버튼 영역
+        bottom_frame = ttk.Frame(main_frame)
+        bottom_frame.pack(fill=tk.X, pady=5)
+
+        save_button = ttk.Button(bottom_frame, text="저장하기", command=self.save_result)
+        save_button.pack(side=tk.RIGHT, padx=5)
+
+        # 상태 표시줄
+        self.status_var = tk.StringVar(value="준비")
+        status_bar = ttk.Label(self.root, textvariable=self.status_var, relief=tk.SUNKEN, anchor=tk.W)
+        status_bar.pack(side=tk.BOTTOM, fill=tk.X)
+
+    def add_url(self):
+        url = self.url_entry.get().strip()
+        if url:
+            if "blog.naver.com" in url:
+                self.url_list.append(url)
+                self.url_listbox.insert(tk.END, f"{len(self.url_list)}. {url}")
+                self.url_entry.delete(0, tk.END)
+            else:
+                messagebox.showwarning("URL 오류", "네이버 블로그 URL만 입력해 주세요.")
+        else:
+            messagebox.showwarning("URL 오류", "URL을 입력해 주세요.")
+
+    def remove_url(self):
+        selected = self.url_listbox.curselection()
+        if selected:
+            index = selected[0]
+            self.url_list.pop(index)
+            self.url_listbox.delete(index)
+
+            # 번호 다시 매기기
+            self.url_listbox.delete(0, tk.END)
+            for i, url in enumerate(self.url_list):
+                self.url_listbox.insert(tk.END, f"{i + 1}. {url}")
+
+    def clear_urls(self):
+        self.url_list = []
+        self.url_listbox.delete(0, tk.END)
+
+    def start_extraction(self):
+        if not self.url_list:
+            messagebox.showwarning("추출 오류", "URL을 최소 하나 이상 추가해 주세요.")
+            return
+
+        # 쓰레드로 실행하여 UI 응답성 유지
+        self.result_text.delete(1.0, tk.END)
+        self.status_var.set("추출 중...")
+        self.root.update_idletasks()
+
+        extraction_thread = threading.Thread(target=self.extract_content)
+        extraction_thread.daemon = True
+        extraction_thread.start()
+
+    def extract_content(self):
+        all_content = []
+
+        for i, url in enumerate(self.url_list):
+            self.status_var.set(f"URL {i + 1}/{len(self.url_list)} 처리 중...")
+            self.root.update_idletasks()
+
+            try:
+                # HTML 가져오기
+                html = fetch_blog_post_html(url)
+
+                if not html:
+                    all_content.append(f"{i + 1}. URL 처리 실패: {url}\n")
+                    continue
+
+                # 메타데이터 추출
+                metadata = get_blog_metadata(html)
+
+                # 텍스트 추출
+                content = extract_text_from_html(html)
+
+                # 번호와 함께 결과 추가
+                result = f"{i + 1}. "
+                if 'title' in metadata:
+                    result += f"{metadata['title']}\n"
+                else:
+                    result += f"{url.split('/')[-1]}\n"
+
+                if 'date' in metadata:
+                    result += f"작성일: {metadata['date']}\n"
+
+                result += "\n" + content + "\n\n" + "-" * 50 + "\n\n"
+                all_content.append(result)
+
+                # 실시간으로 결과 업데이트
+                self.update_result_text("".join(all_content))
+
+                # 네이버 서버에 부담을 주지 않기 위한 딜레이
+                time.sleep(1)
+
+            except Exception as e:
+                all_content.append(f"{i + 1}. 오류 발생: {str(e)}\n\n")
+                self.update_result_text("".join(all_content))
+
+        self.extracted_text = "".join(all_content)
+        self.status_var.set(f"추출 완료: {len(self.url_list)}개 URL 처리됨")
+
+    def update_result_text(self, text):
+        # UI 스레드에서 안전하게 Text 위젯 업데이트
+        self.root.after(0, lambda: self._update_text(text))
+
+    def _update_text(self, text):
+        self.result_text.delete(1.0, tk.END)
+        self.result_text.insert(tk.END, text)
+        self.result_text.see(tk.END)  # 스크롤을 맨 아래로
+
+    def save_result(self):
+        if not self.extracted_text:
+            messagebox.showwarning("저장 오류", "저장할 내용이 없습니다.")
+            return
+
+        file_path = filedialog.asksaveasfilename(
+            defaultextension=".txt",
+            filetypes=[("텍스트 파일", "*.txt"), ("모든 파일", "*.*")],
+            title="결과 저장"
+        )
+
+        if file_path:
+            try:
+                with open(file_path, 'w', encoding='utf-8') as f:
+                    f.write(self.extracted_text)
+                messagebox.showinfo("저장 완료", f"파일이 성공적으로 저장되었습니다:\n{file_path}")
+            except Exception as e:
+                messagebox.showerror("저장 오류", f"파일 저장 중 오류가 발생했습니다:\n{str(e)}")
+
+
+if __name__ == "__main__":
+    root = tk.Tk()
+    app = BlogExtractorApp(root)
+    root.mainloop()
