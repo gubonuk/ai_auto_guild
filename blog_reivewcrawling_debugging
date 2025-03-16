@@ -1,0 +1,601 @@
+# 네이버 블로그 스크래퍼 디버깅 가이드
+
+'''
+이 파일은 네이버 블로그 스크래퍼의 각 함수별 디버깅 방법과 
+보안 이슈 해결 방법을 담고 있습니다.
+'''
+
+#=====================================================
+# 1. 웹드라이버 관련 디버깅
+#=====================================================
+
+def debug_webdriver():
+    """
+    웹드라이버 설정 및 초기화 관련 디버깅
+    """
+    from selenium import webdriver
+    from selenium.webdriver.chrome.service import Service as ChromeService
+    from webdriver_manager.chrome import ChromeDriverManager
+    
+    try:
+        # 단계 1: 기본 옵션으로 시도
+        print("기본 옵션으로 Chrome 드라이버 초기화 시도...")
+        options = webdriver.ChromeOptions()
+        options.add_argument("--headless")
+        driver = webdriver.Chrome(service=ChromeService(ChromeDriverManager().install()), options=options)
+        print("기본 옵션으로 성공!")
+        driver.quit()
+    except Exception as e:
+        print(f"기본 옵션 실패: {e}")
+        
+        try:
+            # 단계 2: 더 많은 옵션 추가
+            print("추가 옵션으로 시도...")
+            options = webdriver.ChromeOptions()
+            options.add_argument("--headless")
+            options.add_argument("--disable-gpu")
+            options.add_argument("--no-sandbox")
+            options.add_argument("--disable-dev-shm-usage")
+            options.add_argument("--disable-extensions")
+            # 더 안전한 설정 - 기업 환경에서 유용
+            options.add_argument("--disable-blink-features=AutomationControlled")
+            options.add_experimental_option("excludeSwitches", ["enable-automation"])
+            options.add_experimental_option("useAutomationExtension", False)
+            
+            driver = webdriver.Chrome(service=ChromeService(ChromeDriverManager().install()), options=options)
+            print("추가 옵션으로 성공!")
+            driver.quit()
+        except Exception as e:
+            print(f"추가 옵션도 실패: {e}")
+            
+            try:
+                # 단계 3: 바이너리 직접 지정 시도
+                print("Chrome 바이너리 직접 지정 시도...")
+                import platform
+                system = platform.system()
+                
+                if system == "Windows":
+                    binary_paths = [
+                        r"C:\Program Files\Google\Chrome\Application\chrome.exe",
+                        r"C:\Program Files (x86)\Google\Chrome\Application\chrome.exe"
+                    ]
+                elif system == "Darwin":  # macOS
+                    binary_paths = [
+                        "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"
+                    ]
+                else:  # Linux
+                    binary_paths = [
+                        "/usr/bin/google-chrome",
+                        "/usr/bin/google-chrome-stable"
+                    ]
+                
+                for path in binary_paths:
+                    try:
+                        options = webdriver.ChromeOptions()
+                        options.add_argument("--headless")
+                        options.binary_location = path
+                        driver = webdriver.Chrome(service=ChromeService(ChromeDriverManager().install()), options=options)
+                        print(f"성공! 바이너리 경로: {path}")
+                        driver.quit()
+                        break
+                    except Exception as e:
+                        print(f"바이너리 경로 {path} 실패: {e}")
+            except Exception as e:
+                print(f"모든 Chrome 초기화 방법 실패: {e}")
+                print("대안: Chrome 대신 Firefox 사용을 고려하세요.")
+
+#=====================================================
+# 2. 네이버 블로그 접근 관련 디버깅
+#=====================================================
+
+def debug_naver_access(url):
+    """
+    네이버 블로그 접근 관련 디버깅
+    """
+    from selenium import webdriver
+    from selenium.webdriver.chrome.service import Service as ChromeService
+    from selenium.webdriver.common.by import By
+    from selenium.webdriver.support.ui import WebDriverWait
+    from selenium.webdriver.support import expected_conditions as EC
+    from webdriver_manager.chrome import ChromeDriverManager
+    import time
+    
+    options = webdriver.ChromeOptions()
+    options.add_argument("--headless")
+    options.add_argument("--disable-gpu")
+    options.add_argument("--no-sandbox")
+    
+    # 1. 봇 감지 우회 - 사용자 에이전트 설정
+    user_agents = [
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36",
+        "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/14.1.1 Safari/605.1.15",
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:89.0) Gecko/20100101 Firefox/89.0"
+    ]
+    options.add_argument(f"user-agent={user_agents[0]}")
+    
+    try:
+        driver = webdriver.Chrome(service=ChromeService(ChromeDriverManager().install()), options=options)
+        print(f"URL {url} 접근 중...")
+        
+        # 1. 기본 접근
+        driver.get(url)
+        time.sleep(3)
+        
+        # 2. iframe 접근 시도
+        try:
+            print("iframe 탐색 중...")
+            iframes = driver.find_elements(By.TAG_NAME, "iframe")
+            print(f"발견된 iframe 수: {len(iframes)}")
+            
+            # iframe ID 확인
+            iframe_ids = [iframe.get_attribute('id') for iframe in iframes]
+            print(f"iframe ID 목록: {iframe_ids}")
+            
+            # 메인프레임 찾기
+            mainframe = driver.find_element(By.ID, "mainFrame")
+            print("메인프레임 발견!")
+            
+            # iframe 전환
+            driver.switch_to.frame(mainframe)
+            print("iframe으로 전환 성공!")
+            
+            # 본문 존재 확인
+            body_element = driver.find_element(By.TAG_NAME, "body")
+            print("본문 요소 발견!")
+            
+            # 콘텐츠 확인
+            content_elements = driver.find_elements(By.CSS_SELECTOR, "div.se-main-container, div.__content_area__, div.post-view")
+            if content_elements:
+                print(f"콘텐츠 요소 발견! 타입: {content_elements[0].get_attribute('class')}")
+            else:
+                print("콘텐츠 요소를 찾을 수 없습니다. HTML 구조 확인 필요")
+                
+            # HTML 소스 일부 출력
+            html_preview = body_element.get_attribute('innerHTML')[:500]
+            print(f"HTML 미리보기: {html_preview}...")
+            
+        except Exception as e:
+            print(f"iframe 접근 실패: {e}")
+            
+            # 캡차 또는 로그인 화면 확인
+            if "Captcha" in driver.page_source or "captcha" in driver.page_source:
+                print("캡차 감지됨!")
+            if "로그인" in driver.page_source or "login" in driver.page_source.lower():
+                print("로그인 페이지 감지됨!")
+                
+            # 리디렉션 확인
+            final_url = driver.current_url
+            if url != final_url:
+                print(f"리디렉션 감지: {url} -> {final_url}")
+                
+    except Exception as e:
+        print(f"접근 실패: {e}")
+    finally:
+        driver.quit()
+
+#=====================================================
+# 3. HTML 파싱 디버깅
+#=====================================================
+
+def debug_html_parsing(html_content):
+    """
+    HTML 파싱 관련 디버깅
+    """
+    from bs4 import BeautifulSoup
+    import re
+    
+    if not html_content:
+        print("HTML 콘텐츠가 비어있습니다!")
+        return
+    
+    soup = BeautifulSoup(html_content, 'html.parser')
+    
+    # 1. 기본 HTML 구조 확인
+    print(f"HTML 길이: {len(html_content)} 바이트")
+    
+    # 2. DOCTYPE 확인
+    doctype = soup.contents[0] if soup.contents else None
+    print(f"DOCTYPE: {doctype}")
+    
+    # 3. 메타데이터 확인
+    title = soup.title.string if soup.title else "제목 없음"
+    print(f"페이지 제목: {title}")
+    
+    # 4. 핵심 컨테이너 요소 검사
+    containers = {
+        "새 에디터 (se-main-container)": soup.select("div.se-main-container"),
+        "구 에디터 (__content_area__)": soup.select("div.__content_area__"),
+        "구 에디터 (post-view)": soup.select("div.post-view"),
+        "구 에디터 (postViewArea)": soup.select("div#postViewArea")
+    }
+    
+    for container_name, elements in containers.items():
+        print(f"{container_name}: {len(elements)}개 발견")
+    
+    # 5. 콘텐츠 요소 디버깅
+    content_selectors = {
+        "텍스트 블록 (se-text)": "div.se-text",
+        "인용구 (se-quote)": "div.se-quote",
+        "코드 블록 (se-code)": "div.se-code",
+        "표 (se-table)": "table.se-table",
+        "단락 (p 태그)": "p",
+        "이미지 (se-image)": "div.se-image"
+    }
+    
+    for selector_name, selector in content_selectors.items():
+        elements = soup.select(selector)
+        print(f"{selector_name}: {len(elements)}개 발견")
+        
+        # 첫 번째 요소 내용 샘플 출력
+        if elements:
+            sample_text = elements[0].get_text(strip=True)
+            if len(sample_text) > 50:
+                sample_text = sample_text[:50] + "..."
+            print(f"  샘플: {sample_text}")
+    
+    # 6. 비어있는 요소 찾기
+    print("\n비어있는 요소 확인:")
+    empty_elements = soup.find_all(lambda tag: not tag.contents and tag.name not in ['br', 'hr', 'img', 'meta', 'link', 'input'])
+    print(f"비어있는 요소 수: {len(empty_elements)}")
+    
+    # 7. 에러 메시지 찾기
+    error_keywords = ["오류", "에러", "error", "접근", "권한", "로그인", "captcha", "캡차"]
+    for keyword in error_keywords:
+        matches = re.findall(rf'\b{keyword}\b', html_content, re.IGNORECASE)
+        if matches:
+            print(f"'{keyword}' 관련 단어 {len(matches)}개 발견")
+
+#=====================================================
+# 4. 텍스트 추출 디버깅
+#=====================================================
+
+def debug_text_extraction(html_content):
+    """
+    텍스트 추출 관련 디버깅
+    """
+    from bs4 import BeautifulSoup
+    
+    if not html_content:
+        print("HTML 콘텐츠가 비어있습니다!")
+        return
+    
+    soup = BeautifulSoup(html_content, 'html.parser')
+    
+    # 1. 새 에디터 버전 텍스트 추출 테스트
+    if soup.select_one('div.se-main-container'):
+        print("새 에디터 버전 감지!")
+        
+        # 텍스트 블록 추출
+        text_blocks = soup.select('div.se-text')
+        for i, block in enumerate(text_blocks[:3]):  # 처음 3개만 확인
+            text = block.get_text(strip=True)
+            print(f"텍스트 블록 {i+1}: {text[:50]}...")
+    
+    # 2. 구 에디터 버전 텍스트 추출 테스트
+    elif soup.select_one('div.__content_area__, div.post-view'):
+        print("구 에디터 버전 감지!")
+        
+        content_area = soup.select_one('div.__content_area__, div.post-view, div#postViewArea')
+        if content_area:
+            # 단락 추출
+            paragraphs = content_area.select('p')
+            for i, p in enumerate(paragraphs[:3]):  # 처음 3개만 확인
+                p_text = p.get_text(strip=True)
+                print(f"단락 {i+1}: {p_text[:50]}...")
+    
+    # 3. 텍스트 추출 통계
+    extraction_stats = {
+        "전체 HTML 크기": len(html_content),
+        "추출 텍스트 블록 수": len(soup.select('div.se-text, p')),
+        "이미지 수": len(soup.select('img')),
+        "링크 수": len(soup.select('a')),
+        "스크립트 수": len(soup.select('script')),
+        "스타일 수": len(soup.select('style'))
+    }
+    
+    for stat_name, value in extraction_stats.items():
+        print(f"{stat_name}: {value}")
+    
+    # 4. 텍스트 크기 대 HTML 크기 비율 계산
+    all_text = soup.get_text(strip=True)
+    text_ratio = len(all_text) / len(html_content) * 100 if html_content else 0
+    print(f"텍스트/HTML 비율: {text_ratio:.2f}%")
+    
+    # 5. 추출 가능한 의미 있는 텍스트 검증
+    meaningful_text_blocks = []
+    for tag in soup.select('p, div, span'):
+        text = tag.get_text(strip=True)
+        if text and len(text) > 50:  # 일정 길이 이상인 텍스트 블록만 고려
+            meaningful_text_blocks.append(text)
+    
+    print(f"의미 있는 텍스트 블록 수: {len(meaningful_text_blocks)}")
+    if meaningful_text_blocks:
+        total_text_len = sum(len(block) for block in meaningful_text_blocks)
+        print(f"추출 가능한 텍스트 총 길이: {total_text_len} 문자")
+        print(f"HTML 대비 추출 텍스트 비율: {total_text_len / len(html_content) * 100:.2f}%")
+
+#=====================================================
+# 5. 파일 처리 디버깅
+#=====================================================
+
+def debug_file_operations(output_dir="extracted_blogs"):
+    """
+    파일 처리 관련 디버깅
+    """
+    import os
+    import tempfile
+    
+    # 1. 디렉토리 생성 테스트
+    try:
+        test_dir = tempfile.mkdtemp(prefix="test_scraper_")
+        print(f"임시 디렉토리 생성 성공: {test_dir}")
+        
+        # 출력 디렉토리 생성 테스트
+        os.makedirs(os.path.join(test_dir, output_dir), exist_ok=True)
+        print(f"출력 디렉토리 생성 성공: {os.path.join(test_dir, output_dir)}")
+    except Exception as e:
+        print(f"디렉토리 생성 실패: {e}")
+    
+    # 2. 쓰기 권한 테스트
+    try:
+        test_file_path = os.path.join(test_dir, "test_write.txt")
+        with open(test_file_path, 'w', encoding='utf-8') as f:
+            f.write("테스트 쓰기 성공")
+        print(f"파일 쓰기 테스트 성공: {test_file_path}")
+        
+        # 파일 읽기 테스트
+        with open(test_file_path, 'r', encoding='utf-8') as f:
+            content = f.read()
+        print(f"파일 읽기 테스트 성공: {content}")
+    except Exception as e:
+        print(f"파일 쓰기/읽기 실패: {e}")
+    
+    # 3. 파일명 생성 및 중복 처리 테스트
+    test_blog_ids = ["blogid1", "blogid2", "blogid1"]
+    test_post_ids = ["postid1", "postid2", "postid1"]
+    
+    created_files = []
+    for blog_id, post_id in zip(test_blog_ids, test_post_ids):
+        filename = f"{blog_id}_{post_id}.txt"
+        filepath = os.path.join(test_dir, output_dir, filename)
+        
+        if os.path.exists(filepath):
+            print(f"파일 {filename}이 이미 존재합니다. 중복 처리 필요")
+        else:
+            try:
+                with open(filepath, 'w', encoding='utf-8') as f:
+                    f.write(f"테스트 콘텐츠 {blog_id} {post_id}")
+                created_files.append(filepath)
+                print(f"파일 생성 성공: {filename}")
+            except Exception as e:
+                print(f"파일 {filename} 생성 실패: {e}")
+    
+    # 4. 정리 - 생성한 파일 및 디렉토리 삭제
+    for file_path in created_files:
+        try:
+            os.remove(file_path)
+            print(f"파일 삭제 성공: {file_path}")
+        except Exception as e:
+            print(f"파일 삭제 실패 {file_path}: {e}")
+    
+    try:
+        import shutil
+        shutil.rmtree(test_dir)
+        print(f"임시 디렉토리 삭제 성공: {test_dir}")
+    except Exception as e:
+        print(f"임시 디렉토리 삭제 실패: {e}")
+
+#=====================================================
+# 6. URL 리스트 처리 디버깅
+#=====================================================
+
+def debug_url_list_processing():
+    """
+    URL 리스트 처리 관련 디버깅
+    """
+    import tempfile
+    import os
+    
+    # 1. URL 리스트 파일 생성 테스트
+    try:
+        with tempfile.NamedTemporaryFile(mode='w+', delete=False, suffix='.txt') as tmp:
+            tmp.write("https://blog.naver.com/hihihim1/223040368960\n")
+            tmp.write("https://blog.naver.com/example/123456789\n")
+            tmp.write("# 주석 라인\n")
+            tmp.write("\n")  # 빈 라인
+            tmp.write("https://blog.naver.com/another/987654321\n")
+            temp_file_path = tmp.name
+        
+        print(f"테스트 URL 파일 생성 성공: {temp_file_path}")
+        
+        # URL 파일 읽기 테스트
+        with open(temp_file_path, 'r') as f:
+            lines = [line.strip() for line in f if line.strip() and not line.startswith('#')]
+        
+        print(f"URL 파일에서 추출된 유효 URL 수: {len(lines)}")
+        for url in lines:
+            print(f"  - {url}")
+        
+        # 파일 삭제
+        os.unlink(temp_file_path)
+        print(f"테스트 URL 파일 삭제 성공")
+    except Exception as e:
+        print(f"URL 파일 처리 실패: {e}")
+    
+    # 2. URL 유효성 검사 테스트
+    test_urls = [
+        "https://blog.naver.com/user/12345",
+        "http://blog.naver.com/user/12345",
+        "blog.naver.com/user/12345",
+        "https://m.blog.naver.com/user/12345",
+        "https://blog.naver.com",
+        "https://otherdomain.com/blog",
+        ""
+    ]
+    
+    import re
+    valid_pattern = re.compile(r'^(https?://)?(m\.)?(blog\.naver\.com)/([^/]+)/(\d+)$')
+    
+    for url in test_urls:
+        match = valid_pattern.match(url)
+        if match:
+            print(f"유효한 URL: {url}")
+            print(f"  - 블로그 ID: {match.group(4)}")
+            print(f"  - 포스트 ID: {match.group(5)}")
+        else:
+            print(f"유효하지 않은 URL 형식: {url}")
+
+#=====================================================
+# 7. 보안 이슈 진단 및 해결
+#=====================================================
+
+def diagnose_security_issues():
+    """
+    보안 이슈 진단 및 해결책
+    """
+    print("=== 네이버 블로그 스크래핑 보안 이슈 진단 ===\n")
+    
+    # 1. 사용자 에이전트 감지 우회 테스트
+    print("1. 사용자 에이전트 감지 우회 테스트")
+    from selenium import webdriver
+    from selenium.webdriver.chrome.service import Service as ChromeService
+    from webdriver_manager.chrome import ChromeDriverManager
+    import time
+    
+    # 기본 사용자 에이전트로 테스트
+    options = webdriver.ChromeOptions()
+    options.add_argument("--headless")
+    
+    # 일반적인 사용자 에이전트로 설정
+    user_agent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36"
+    options.add_argument(f"user-agent={user_agent}")
+    
+    # 자동화 감지 회피 설정
+    options.add_argument("--disable-blink-features=AutomationControlled")
+    options.add_experimental_option("excludeSwitches", ["enable-automation"])
+    options.add_experimental_option("useAutomationExtension", False)
+    
+    try:
+        driver = webdriver.Chrome(service=ChromeService(ChromeDriverManager().install()), options=options)
+        
+        # 자동화 감지 회피 스크립트 주입
+        driver.execute_script("""
+        Object.defineProperty(navigator, 'webdriver', {
+            get: () => undefined
+        });
+        """)
+        
+        # 네이버 접속 테스트
+        print("네이버 메인 페이지 접속 중...")
+        driver.get("https://www.naver.com")
+        time.sleep(2)
+        
+        # 봇 감지 여부 확인
+        bot_checks = [
+            "로봇이", "자동화", "robot", "automated", "captcha", "캡차",
+            "비정상적인", "접근", "차단"
+        ]
+        
+        detected = False
+        for check in bot_checks:
+            if check in driver.page_source.lower():
+                print(f"봇 감지 의심 키워드 발견: '{check}'")
+                detected = True
+        
+        if not detected:
+            print("봇 감지 우회 성공!")
+            print(f"페이지 타이틀: {driver.title}")
+        
+    except Exception as e:
+        print(f"테스트 실패: {e}")
+    finally:
+        driver.quit()
+    
+    print("\n2. IP 차단 회피 방법")
+    print("- 요청 간 딜레이 증가 (현재 2초)")
+    print("- 프록시 서버 사용 고려")
+    print("- 요청 수 제한 (하루 100개 미만 권장)")
+    
+    print("\n3. 로그인 요구 처리 방법")
+    print("- 성인 인증 필요 글은 접근 불가능")
+    print("- 비공개 글은 접근 불가능")
+    print("- 로그인 세션 쿠키 사용 방법 (단, 법적 위험성 있음):")
+    
+    # 안전하게 쿠키 사용하는 코드 예시
+    print("""
+# 쿠키 설정 예시 (테스트 목적으로만 사용)
+def set_login_cookies(driver):
+    # 주의: 개인 쿠키를 코드에 직접 입력하지 마세요. 환경 변수나 별도 파일에서 불러오세요.
+    cookies = [
+        {'name': 'NID_AUT', 'value': 'YOUR_COOKIE_VALUE'},
+        {'name': 'NID_SES', 'value': 'YOUR_COOKIE_VALUE'}
+    ]
+    
+    # 먼저 네이버 도메인에 접속
+    driver.get('https://naver.com')
+    
+    # 그 후 쿠키 설정
+    for cookie in cookies:
+        driver.add_cookie(cookie)
+    """)
+    
+    print("\n4. HTML 구조 변경 대응 방법")
+    print("- 여러 선택자 시도 (현재 구현됨)")
+    print("- 정기적인 코드 업데이트 필요")
+    print("- 탐색적 선택자 사용 - 일치하는 모든 요소에서 텍스트 추출")
+    
+    print("\n5. 자원 사용 제한 방법")
+    print("- 병렬 처리 지양 (단일 스레드 사용)")
+    print("- 세션 재사용 고려")
+    print("- 크롬 메모리 사용량 제한 옵션")
+    
+    print("""
+# 크롬 메모리 사용량 제한 옵션 예시
+options.add_argument('--disable-dev-shm-usage')
+options.add_argument('--disable-gpu')
+options.add_argument('--no-sandbox')
+options.add_argument('--disable-extensions')
+options.add_argument('--disable-infobars')
+options.add_argument('--remote-debugging-port=9222')
+    """)
+    
+    print("\n6. 법적 고려사항")
+    print("- 네이버 robots.txt 존중 필요")
+    print("- 스크래핑 결과의 상업적 이용 제한")
+    print("- 개인정보 처리 주의")
+    print("- 네이버 이용약관 검토 필요")
+    
+    print("\n7. 안정성 개선 방법")
+    print("- 오류 복구 메커니즘 추가")
+    print("- 재시도 로직 구현")
+    print("- 진행 상황 저장")
+    
+    print("""
+# 재시도 로직 예시
+def fetch_with_retry(url, max_retries=3, delay=5):
+    for attempt in range(max_retries):
+        try:
+            return fetch_blog_post_html(url)
+        except Exception as e:
+            print(f"시도 {attempt+1}/{max_retries} 실패: {e}")
+            if attempt < max_retries - 1:
+                time.sleep(delay)
+    return None
+    """)
+
+# 메인 함수 - 모든 디버깅 기능 실행
+def debug_all():
+    """
+    모든 디버깅 기능을 순차적으로 실행
+    """
+    # 1. 웹드라이버 디버깅
+    print("=" * 50)
+    print("웹드라이버 디버깅")
+    print("=" * 50)
+    debug_webdriver()
+    
+    # 2. 네이버 블로그 URL 접근 디버깅
+    print("\n" + "=" * 50)
+    print("네이버 블로그 접근 디버깅")
+    print("=" * 50)
+    url = "
