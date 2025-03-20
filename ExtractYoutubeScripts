@@ -1,0 +1,170 @@
+import tkinter as tk
+from tkinter import scrolledtext, messagebox, filedialog
+import re
+from youtube_transcript_api import YouTubeTranscriptApi
+import threading
+
+
+class YoutubeTranscriptExtractor:
+    def __init__(self, root):
+        self.root = root
+        self.root.title("유튜브 스크립트 추출기")
+        self.root.geometry("600x500")
+        self.root.resizable(True, True)
+
+        # URL 입력 프레임
+        url_frame = tk.Frame(root)
+        url_frame.pack(fill=tk.X, padx=10, pady=10)
+
+        tk.Label(url_frame, text="유튜브 URL:").pack(side=tk.LEFT)
+
+        self.url_entry = tk.Entry(url_frame)
+        self.url_entry.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=5)
+
+        self.extract_button = tk.Button(url_frame, text="스크립트 추출", command=self.extract_transcript)
+        self.extract_button.pack(side=tk.RIGHT, padx=5)
+
+        # 옵션 프레임
+        options_frame = tk.Frame(root)
+        options_frame.pack(fill=tk.X, padx=10, pady=(0, 10))
+
+        self.timestamp_var = tk.BooleanVar(value=False)
+        timestamp_check = tk.Checkbutton(options_frame, text="타임스탬프 포함", variable=self.timestamp_var)
+        timestamp_check.pack(side=tk.LEFT)
+
+        # 진행 상태 표시
+        self.status_var = tk.StringVar(value="준비 완료")
+        status_label = tk.Label(options_frame, textvariable=self.status_var)
+        status_label.pack(side=tk.RIGHT)
+
+        # 텍스트 영역 프레임
+        text_frame = tk.Frame(root)
+        text_frame.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
+
+        self.transcript_text = scrolledtext.ScrolledText(text_frame, wrap=tk.WORD)
+        self.transcript_text.pack(fill=tk.BOTH, expand=True)
+
+        # 저장 버튼 프레임
+        button_frame = tk.Frame(root)
+        button_frame.pack(fill=tk.X, padx=10, pady=10)
+
+        self.save_button = tk.Button(button_frame, text="텍스트 저장", command=self.save_transcript)
+        self.save_button.pack(side=tk.RIGHT)
+
+        # 초기화
+        self.transcript_data = None
+
+    def get_video_id(self, youtube_url):
+        """유튜브 URL에서 비디오 ID를 추출합니다."""
+        video_id_match = re.search(r"(?:v=|\/)([0-9A-Za-z_-]{11}).*", youtube_url)
+        if video_id_match:
+            return video_id_match.group(1)
+        return None
+
+    def extract_transcript_thread(self):
+        """별도 스레드에서 실행되는 스크립트 추출 함수"""
+        youtube_url = self.url_entry.get().strip()
+
+        if not youtube_url:
+            messagebox.showerror("오류", "유튜브 URL을 입력해주세요.")
+            self.status_var.set("준비 완료")
+            return
+
+        video_id = self.get_video_id(youtube_url)
+        if not video_id:
+            messagebox.showerror("오류", "올바른 유튜브 URL이 아닙니다.")
+            self.status_var.set("준비 완료")
+            return
+
+        try:
+            self.status_var.set("스크립트 가져오는 중...")
+            self.root.update_idletasks()
+
+            # 직접 API를 사용하여 트랜스크립트 가져오기
+            self.transcript_data = YouTubeTranscriptApi.get_transcript(video_id, languages=['ko', 'en'])
+
+            # UI에 트랜스크립트 표시
+            self.transcript_text.delete(1.0, tk.END)
+
+            if self.timestamp_var.get():
+                # 타임스탬프 포함
+                for entry in self.transcript_data:
+                    # entry는 딕셔너리여야 함
+                    if isinstance(entry, dict) and 'start' in entry and 'text' in entry:
+                        seconds = int(entry['start'])
+                        minutes, seconds = divmod(seconds, 60)
+                        hours, minutes = divmod(minutes, 60)
+                        timestamp = f"[{hours:02d}:{minutes:02d}:{seconds:02d}] "
+                        self.transcript_text.insert(tk.END, f"{timestamp}{entry['text']}\n")
+            else:
+                # 텍스트만
+                if all(isinstance(entry, dict) and 'text' in entry for entry in self.transcript_data):
+                    full_text = ' '.join([entry['text'] for entry in self.transcript_data])
+                    self.transcript_text.insert(tk.END, full_text)
+                else:
+                    # 객체 형식이 예상과 다른 경우를 처리
+                    self.transcript_text.insert(tk.END, "스크립트 형식을 처리할 수 없습니다. 개발자에게 문의하세요.")
+
+            self.status_var.set("스크립트 추출 완료")
+
+        except Exception as e:
+            self.transcript_text.delete(1.0, tk.END)
+            error_msg = str(e)
+
+            # 보다 구체적인 오류 메시지 제공
+            if "Transcript is not available" in error_msg:
+                detail_msg = "이 영상에는 자막이 없습니다."
+            elif "Could not retrieve a transcript" in error_msg:
+                detail_msg = "자막을 가져올 수 없습니다. 영상에 자막이 있는지 확인하세요."
+            elif "FetchedTranscriptSnippet" in error_msg:
+                detail_msg = "API 응답 형식 변경. 최신 버전의 youtube-transcript-api 패키지를 설치해 보세요:\npip install --upgrade youtube-transcript-api"
+            else:
+                detail_msg = "가능한 원인:\n1. 인터넷 연결 확인\n2. 유효한 유튜브 URL인지 확인\n3. 해당 영상에 자막(스크립트)이 있는지 확인"
+
+            self.transcript_text.insert(tk.END, f"오류 발생: {error_msg}\n\n{detail_msg}")
+            self.status_var.set("오류 발생")
+
+    def extract_transcript(self):
+        """스크립트 추출 버튼 핸들러"""
+        self.extract_button.config(state=tk.DISABLED)
+        self.status_var.set("준비 중...")
+
+        # 별도 스레드에서 실행
+        thread = threading.Thread(target=self.extract_transcript_thread)
+        thread.daemon = True
+        thread.start()
+
+        # 주기적으로 스레드 상태 확인 및 UI 업데이트
+        def check_thread():
+            if thread.is_alive():
+                self.root.after(100, check_thread)
+            else:
+                self.extract_button.config(state=tk.NORMAL)
+
+        self.root.after(100, check_thread)
+
+    def save_transcript(self):
+        """저장 버튼 핸들러"""
+        if not self.transcript_text.get(1.0, tk.END).strip():
+            messagebox.showinfo("알림", "저장할 내용이 없습니다.")
+            return
+
+        file_path = filedialog.asksaveasfilename(
+            defaultextension=".txt",
+            filetypes=[("텍스트 파일", "*.txt"), ("모든 파일", "*.*")],
+            title="스크립트 저장"
+        )
+
+        if file_path:
+            try:
+                with open(file_path, 'w', encoding='utf-8') as file:
+                    file.write(self.transcript_text.get(1.0, tk.END))
+                messagebox.showinfo("성공", f"파일이 저장되었습니다:\n{file_path}")
+            except Exception as e:
+                messagebox.showerror("오류", f"파일 저장 중 오류 발생:\n{str(e)}")
+
+
+if __name__ == "__main__":
+    root = tk.Tk()
+    app = YoutubeTranscriptExtractor(root)
+    root.mainloop()
